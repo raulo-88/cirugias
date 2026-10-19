@@ -45,6 +45,8 @@
   .tarjeta{background:var(--sup);border-radius:var(--r);padding:18px;box-shadow:0 6px 24px rgba(20,48,61,.08)}
   .tarjeta h2{font-family:var(--display);font-size:16px;margin:0}
   .demo{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;background:#FFF7DB;color:#7A5300;border-radius:14px;padding:12px 14px;font-size:14px;font-weight:600}
+  .nueva-version{background:var(--acento-suave);color:var(--acento-osc)}
+  .nueva-version button{background:var(--acento)!important}
   .demo button{border:0;background:#7A5300;color:#fff;border-radius:10px;padding:8px 12px;font-weight:700;white-space:nowrap;cursor:pointer}
 
   /* Dictado */
@@ -190,6 +192,10 @@
 
   <!-- ============ NUEVA ============ -->
   <div class="contenido" id="vNueva">
+    <div class="demo nueva-version" id="avisoVersion" hidden>
+      <span>Hay una versión nueva de la app.</span>
+      <button id="btnActualizar">Actualizar</button>
+    </div>
     <div class="demo" id="avisoDemo" hidden>
       <span>Modo demostración: los datos son de ejemplo.</span>
       <button id="btnConectar">Conectar</button>
@@ -262,6 +268,11 @@
       <button class="principal" id="cfgCopiar">Copiar enlace para el teléfono</button>
       <button class="secundario" id="cfgSalir">Desconectar este dispositivo</button>
     </section>
+    <section class="tarjeta">
+      <h2>Versión de la app</h2>
+      <p class="ayuda" id="txtVersion"></p>
+      <button class="secundario" id="btnBuscarVersion">Buscar actualización</button>
+    </section>
     <button class="secundario" id="cfgVolver" style="margin-top:0">Volver</button>
   </div>
 </main>
@@ -297,6 +308,7 @@ const DURACIONES = [[30,'30 min'],[60,'1 h'],[90,'1 h 30'],[120,'2 h'],[180,'3 h
 const DURACION = 60;
 /* ================================================================================= */
 
+const VERSION = '2026.10.19-b';
 const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const DIAS = ['domingo','lunes','martes','miercoles','jueves','viernes','sabado'];
 const DIAS_C = ['dom','lun','mar','mié','jue','vie','sáb'];
@@ -322,6 +334,8 @@ const CFG = { url:'', clave:'' };
 function leerCfg(){ try { Object.assign(CFG, JSON.parse(localStorage.getItem('cirugias-cfg') || '{}')); } catch(e){} }
 function guardarCfg(){ try { localStorage.setItem('cirugias-cfg', JSON.stringify(CFG)); } catch(e){} }
 leerCfg();
+const cacheLeer = k => { try { return JSON.parse(localStorage.getItem('cirugias-' + k) || 'null'); } catch(e) { return null; } };
+const cacheGuardar = (k, v) => { try { localStorage.setItem('cirugias-' + k, JSON.stringify(v)); } catch(e) {} };
 try {
   const q = new URLSearchParams(location.search);
   if (q.get('u') && q.get('k')) { CFG.url = q.get('u'); CFG.clave = q.get('k'); guardarCfg(); history.replaceState(null, '', location.pathname); }
@@ -468,9 +482,15 @@ function aplicar(){
 /* =================== Feriados =================== */
 let feriadosProx = {};
 async function cargarFeriadosProx(){
+  const guardado = demo() ? null : cacheLeer('feriados');
+  if (guardado) { feriadosProx = guardado.datos; revisarFeriado(); if (guardado.dia === iso(new Date())) return; }
   const d = new Date(); d.setDate(d.getDate() - 7);
   const h = new Date(); h.setDate(h.getDate() + 400);
-  try { (await api('feriados', {desde: iso(d), hasta: iso(h)})).forEach(f => feriadosProx[f.fecha] = f.nombre); revisarFeriado(); } catch(e){}
+  try {
+    const nuevo = {}; (await api('feriados', {desde: iso(d), hasta: iso(h)})).forEach(f => nuevo[f.fecha] = f.nombre);
+    feriadosProx = nuevo; revisarFeriado();
+    if (!demo()) cacheGuardar('feriados', {dia: iso(new Date()), datos: nuevo});
+  } catch(e){}
 }
 function revisarFeriado(){
   const n = feriadosProx[$('fecha').value];
@@ -558,6 +578,7 @@ async function guardar(){
     }
     toast('Guardada ✓ ' + r.creado.titulo + ' · ' + fechaCorta(r.creado.fecha) + ' ' + r.creado.hora);
     limpiar();
+    const fc = new Date(r.creado.fecha + 'T12:00:00'); traerPanel(fc.getFullYear(), fc.getMonth() + 1).catch(() => {});
   } catch(e) { toast(e.message, true); b.textContent = forzar ? 'Guardar igual' : 'Guardar en Cirugías'; }
   b.disabled = false;
 }
@@ -576,22 +597,45 @@ let vistaMes = new Date(); vistaMes.setDate(1);
 let cirugiasMes = [], feriadosMes = [], atrasadas = [];
 let modoConjunto = false, seleccion = new Set();
 
-async function cargarMes(){
-  const a = vistaMes.getFullYear(), m = vistaMes.getMonth() + 1;
-  $('mesTxt').textContent = MESES[m - 1] + ' ' + a;
-  $('lista').innerHTML = '<div class="tarjeta vacio-lista">Cargando…</div>';
+let pedidoMes = 0;
+function datosMes(a, m){
   const desde = a + '-' + pad(m) + '-01';
   const sig = m === 12 ? (a + 1) + '-01-01' : a + '-' + pad(m + 1) + '-01';
-  const inicioMesActual = iso(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  const antesDe = iso(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  return { anio: a, mes: m, desde, hasta: sig, antesDe };
+}
+async function traerPanel(a, m){
+  const d = datosMes(a, m);
+  if (demo()) {
+    const [mes, feriados, pendientes] = await Promise.all([api('mes', d), api('feriados', d), api('pendientes', d)]);
+    return { mes, feriados, pendientes };
+  }
+  const r = await api('panel', d);
+  cacheGuardar('mes-' + a + '-' + pad(m), r);
+  return r;
+}
+async function cargarMes(){
+  const a = vistaMes.getFullYear(), m = vistaMes.getMonth() + 1, yo = ++pedidoMes;
+  $('mesTxt').textContent = MESES[m - 1] + ' ' + a;
+  const guardado = demo() ? null : cacheLeer('mes-' + a + '-' + pad(m));
+  if (guardado) { cirugiasMes = guardado.mes; feriadosMes = guardado.feriados; atrasadas = guardado.pendientes; pintarMes(); $('mesTxt').textContent += ' ·'; }
+  else { cirugiasMes = []; feriadosMes = []; atrasadas = []; pintarMes(); $('lista').innerHTML = '<div class="tarjeta vacio-lista">Cargando…</div>'; }
   try {
-    const [cir, fer, atr] = await Promise.all([
-      api('mes', {anio: a, mes: m}),
-      api('feriados', {desde, hasta: sig}),
-      api('pendientes', {antesDe: inicioMesActual})
-    ]);
-    cirugiasMes = cir; feriadosMes = fer; atrasadas = atr;
+    const r = await traerPanel(a, m);
+    if (yo !== pedidoMes) return;
+    cirugiasMes = r.mes; feriadosMes = r.feriados; atrasadas = r.pendientes;
+    $('mesTxt').textContent = MESES[m - 1] + ' ' + a;
     pintarMes();
-  } catch(e) { $('lista').innerHTML = '<div class="tarjeta vacio-lista">' + esc(e.message) + '</div>'; }
+  } catch(e) {
+    if (yo !== pedidoMes) return;
+    if (guardado) { $('mesTxt').textContent = MESES[m - 1] + ' ' + a; toast('Sin conexión: mostrando lo último guardado', true); }
+    else $('lista').innerHTML = '<div class="tarjeta vacio-lista">' + esc(e.message) + '</div>';
+  }
+}
+function guardarMesActual(){
+  if (demo()) return;
+  const a = vistaMes.getFullYear(), m = vistaMes.getMonth() + 1;
+  cacheGuardar('mes-' + a + '-' + pad(m), { mes: cirugiasMes, feriados: feriadosMes, pendientes: atrasadas });
 }
 
 function itemHTML(e){
@@ -676,7 +720,7 @@ async function alClick(e){
       caja.querySelector('.no').onclick = ev2 => { ev2.stopPropagation(); caja.remove(); item.classList.remove('cobrando'); };
       caja.querySelector('.si').onclick = async ev2 => {
         ev2.stopPropagation(); ev2.target.disabled = true;
-        try { reemplazar(await api('cobrado', {id, cobrado: false})); pintarMes(); toast('Vuelve a pendiente'); }
+        try { reemplazar(await api('cobrado', {id, cobrado: false})); pintarMes(); guardarMesActual(); toast('Vuelve a pendiente'); }
         catch(err) { toast(err.message, true); ev2.target.disabled = false; }
       };
       return;
@@ -689,7 +733,7 @@ async function alClick(e){
     box.querySelector('.x').onclick = ev2 => { ev2.stopPropagation(); box.remove(); item.classList.remove('cobrando'); };
     const ok = async () => {
       box.querySelector('.ok').disabled = true;
-      try { reemplazar(await api('cobrado', {id, cobrado: true, monto: soloNum(inp.value)})); pintarMes(); toast('Marcada como cobrada ✓'); }
+      try { reemplazar(await api('cobrado', {id, cobrado: true, monto: soloNum(inp.value)})); pintarMes(); guardarMesActual(); toast('Marcada como cobrada ✓'); }
       catch(err) { toast(err.message, true); box.querySelector('.ok').disabled = false; }
     };
     box.querySelector('.ok').onclick = ev2 => { ev2.stopPropagation(); ok(); };
@@ -707,7 +751,7 @@ async function alClick(e){
       try {
         await api('eliminar', {id});
         cirugiasMes = cirugiasMes.filter(x => x.id !== id); atrasadas = atrasadas.filter(x => x.id !== id);
-        pintarMes(); toast('Cirugía eliminada');
+        pintarMes(); guardarMesActual(); toast('Cirugía eliminada');
       } catch(err) { toast(err.message, true); ev2.target.disabled = false; }
     };
     return;
@@ -718,7 +762,7 @@ async function alClick(e){
     box.innerHTML = '<input inputmode="numeric" placeholder="Gs." value="' + (ev.monto ? miles(ev.monto) : '') + '"><button>OK</button>';
     acc.replaceWith(box); const inp = box.querySelector('input'); formatoMiles(inp); inp.focus();
     const ok = async () => {
-      try { reemplazar(await api('monto', {id, monto: soloNum(inp.value)})); pintarMes(); toast('Monto guardado'); }
+      try { reemplazar(await api('monto', {id, monto: soloNum(inp.value)})); pintarMes(); guardarMesActual(); toast('Monto guardado'); }
       catch(err) { toast(err.message, true); }
     };
     box.querySelector('button').onclick = ok;
@@ -748,7 +792,7 @@ $('conjOk').onclick = async () => {
   $('conjOk').disabled = true;
   try {
     (await api('cobroConjunto', {ids: [...seleccion], total})).forEach(reemplazar);
-    modoConjunto = false; seleccion.clear(); pintarMes(); toast('Pago conjunto registrado ✓ ' + gs(total));
+    modoConjunto = false; seleccion.clear(); pintarMes(); guardarMesActual(); toast('Pago conjunto registrado ✓ ' + gs(total));
   } catch(e) { toast(e.message, true); }
   $('conjOk').disabled = false;
 };
@@ -794,15 +838,31 @@ $('cfgCopiar').onclick = async () => {
   try { await navigator.clipboard.writeText(enlace); toast('Enlace copiado ✓'); }
   catch(e) { $('cfgUrl').value = enlace; $('cfgUrl').select(); toast('Copiá el texto seleccionado', true); }
 };
-$('cfgSalir').onclick = () => { CFG.url = ''; CFG.clave = ''; guardarCfg(); actualizarDemo(); prepararAjustes(); toast('Desconectado. Quedó en modo demostración'); };
+$('cfgSalir').onclick = () => { try { Object.keys(localStorage).filter(k => k.indexOf('cirugias-') === 0 && k !== 'cirugias-cfg').forEach(k => localStorage.removeItem(k)); } catch(e){} CFG.url = ''; CFG.clave = ''; guardarCfg(); actualizarDemo(); prepararAjustes(); toast('Desconectado. Quedó en modo demostración'); };
 function actualizarDemo(){ $('avisoDemo').hidden = !demo(); }
+
+/* =================== Actualizaciones de la app =================== */
+async function buscarActualizacion(manual){
+  if (location.protocol !== 'https:') { if (manual) toast('Ya tenés la última versión'); return; }
+  try {
+    const r = await fetch('./?buscar=' + Date.now(), { cache: 'no-store' });
+    const m = (await r.text()).match(/const VERSION = '([^']+)'/);
+    if (m && m[1] !== VERSION) { $('avisoVersion').hidden = false; if (manual) { mostrar('vNueva'); toast('Hay una versión nueva: tocá Actualizar'); } }
+    else if (manual) toast('Ya tenés la última versión');
+  } catch(e) { if (manual) toast('No se pudo revisar. Probá con internet.', true); }
+}
+$('btnActualizar').onclick = () => location.reload();
+$('btnBuscarVersion').onclick = () => buscarActualizacion(true);
+$('txtVersion').textContent = 'Versión instalada: ' + VERSION;
 
 /* =================== Inicio =================== */
 let tmr;
 $('texto').addEventListener('input', () => { clearTimeout(tmr); tmr = setTimeout(aplicar, 500); });
 (() => { const t = new Date().toLocaleDateString('es-PY', { weekday:'long', day:'numeric', month:'long' }); $('hoy').textContent = t.charAt(0).toUpperCase() + t.slice(1); })();
 pintarPills(); actualizarDemo(); cargarFeriadosProx();
+if (!demo()) setTimeout(() => { const h = new Date(); traerPanel(h.getFullYear(), h.getMonth() + 1).catch(() => {}); }, 300);
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+setTimeout(() => buscarActualizacion(false), 1500);
 </script>
 </body>
 </html>
