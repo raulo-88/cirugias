@@ -145,6 +145,8 @@
   .confirma .si{background:var(--pend);color:#fff}
   .confirma .no{background:var(--sup);color:var(--tinta)}
   .cobro-box small{color:var(--sub);font-size:12px}
+  .borrar-btn{display:inline-flex;align-items:center;gap:4px;border:0;background:none;padding:0;margin-top:6px;font:600 12px var(--texto);color:var(--sub);cursor:pointer}
+  .borrar-btn svg{width:14px;height:14px}
   .grupo-txt{font-size:12px;color:var(--cob);font-weight:700;margin-top:3px}
   .estado-btn{flex:none;border:0;border-radius:999px;padding:8px 12px;font:700 13px var(--texto);cursor:pointer;background:var(--pend-bg);color:var(--pend)}
   .item.cobrado .estado-btn{background:var(--cob-bg);color:var(--cob)}
@@ -367,7 +369,8 @@ const DEMO = (() => {
     },
     cobrado: d => { const e = db.find(x => x.id === d.id); Object.assign(e,{cobrado:d.cobrado,fechaCobro:d.cobrado?hoyIso:'',monto:d.cobrado?(+d.monto||0):0,grupo:'',montoGrupo:0,grupoN:0}); return copia(e); },
     cobroConjunto: d => { const g = 'G'+Date.now(); return d.ids.map(id => { const e = db.find(x => x.id === id); Object.assign(e,{cobrado:true,fechaCobro:hoyIso,grupo:g,montoGrupo:+d.total||0,grupoN:d.ids.length}); return copia(e); }); },
-    monto: d => { const e = db.find(x => x.id === d.id); e.monto = +d.monto||0; return copia(e); }
+    monto: d => { const e = db.find(x => x.id === d.id); e.monto = +d.monto||0; return copia(e); },
+    eliminar: d => { const i = db.findIndex(x => x.id === d.id); if (i >= 0) db.splice(i, 1); return true; }
   };
   return { llamar: (acc, d) => new Promise((ok, ko) => setTimeout(() => { try { ok(acciones[acc](d)); } catch(e){ ko(e); } }, 250)) };
 })();
@@ -604,7 +607,8 @@ function itemHTML(e){
     : '<button class="estado-btn" data-accion="estado">' + (e.cobrado ? '✓ Cobrado' : 'Pendiente') + '</button>';
   return '<div class="item' + (e.cobrado ? ' cobrado' : '') + '" data-id="' + esc(e.id) + '">' +
     '<div class="dia"><b>' + f.getDate() + '</b><small>' + (e.fecha.slice(0,7) === iso(vistaMes).slice(0,7) ? DIAS_C[f.getDay()] : MESES[f.getMonth()].slice(0,3)) + '</small></div>' +
-    '<div class="info"><div class="t">' + esc(e.titulo) + '</div><div class="s">' + (e.hora ? e.hora + ' · ' : '') + lugarTxt + '</div>' + extra + '</div>' +
+    '<div class="info"><div class="t">' + esc(e.titulo) + '</div><div class="s">' + (e.hora ? e.hora + ' · ' : '') + lugarTxt + '</div>' + extra +
+      (modoConjunto ? '' : '<div><button class="borrar-btn" data-accion="borrar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>Eliminar</button></div>') + '</div>' +
     derecha + '</div>';
 }
 
@@ -691,6 +695,22 @@ async function alClick(e){
     box.querySelector('.ok').onclick = ev2 => { ev2.stopPropagation(); ok(); };
     inp.addEventListener('keydown', k => { if (k.key === 'Enter') ok(); });
     inp.addEventListener('click', ev2 => ev2.stopPropagation());
+  }
+  if (acc.dataset.accion === 'borrar') {
+    if (item.querySelector('.confirma')) return;
+    const caja = document.createElement('div'); caja.className = 'confirma';
+    caja.innerHTML = '<p>¿Eliminar esta cirugía del calendario? Se borra también de Google Calendar y no se puede deshacer.</p><div class="fila"><button class="no">Cancelar</button><button class="si">Sí, eliminar</button></div>';
+    item.appendChild(caja); item.classList.add('cobrando');
+    caja.querySelector('.no').onclick = ev2 => { ev2.stopPropagation(); caja.remove(); item.classList.remove('cobrando'); };
+    caja.querySelector('.si').onclick = async ev2 => {
+      ev2.stopPropagation(); ev2.target.disabled = true;
+      try {
+        await api('eliminar', {id});
+        cirugiasMes = cirugiasMes.filter(x => x.id !== id); atrasadas = atrasadas.filter(x => x.id !== id);
+        pintarMes(); toast('Cirugía eliminada');
+      } catch(err) { toast(err.message, true); ev2.target.disabled = false; }
+    };
+    return;
   }
   if (acc.dataset.accion === 'monto' && ev.cobrado) {
     if (item.querySelector('.monto-edit')) return;
